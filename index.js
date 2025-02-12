@@ -1,24 +1,25 @@
-const express = require('express')
-const app = express()
-const cors = require('cors')
-require('dotenv').config()
+const express = require("express");
+const app = express();
+const cors = require("cors");
+require("dotenv").config();
 const mongoose = require("mongoose");
 const bodyParser = require("body-parser");
 
-app.use(cors())
-app.use(express.static('public'))
-app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/views/index.html')
-});
-
+app.use(cors());
+app.use(express.static("public"));
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(express.json());
 
-
-mongoose.connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/views/index.html')
 });
+mongoose.connect(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+}).then(() => console.log("MongoDB Connected"))
+  .catch(err => console.error("MongoDB Connection Error:", err));
+
+
 
 const userSchema = new mongoose.Schema({
   username: String
@@ -26,90 +27,120 @@ const userSchema = new mongoose.Schema({
 const User = mongoose.model("User", userSchema);
 
 
+
 const exerciseSchema = new mongoose.Schema({
-  userId: Number,
+  userId: String,  
   description: String,
   duration: Number,
-  date: String
+  date: Date,
 });
 const Exercise = mongoose.model("Exercise", exerciseSchema);
 
 
+
 app.post("/api/users", async (req, res) => {
   try {
-      const newUser = new User({ username: req.body.username });
-      await newUser.save();
-      res.json({ username: newUser.username, _id: newUser._id });
+    const newUser = new User({ username: req.body.username });
+    await newUser.save();
+    res.json({ username: newUser.username, _id: newUser._id });
   } catch (err) {
-      res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
+
 
 
 app.get("/api/users", async (req, res) => {
   const users = await User.find({}, "_id username");
+  console.log(Exercise.find({}, { date: 1 }));
   res.json(users);
+  
 });
+
 
 
 app.post("/api/users/:_id/exercises", async (req, res) => {
   try {
-      const user = await User.findById(req.params._id);
-      if (!user) return res.json({ error: "User not found" });
+    const { description, duration, date } = req.body;
+    const userId = req.params._id;
 
-      const date = req.body.date ? new Date(req.body.date).toDateString() : new Date().toDateString();
+    // Check if user exists
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
 
-      const newExercise = new Exercise({
-          userId: user._id,
-          description: req.body.description,
-          duration: parseInt(req.body.duration),
-          date: date
-      });
+    // Correct Date Handling
+    let parsedDate = date ? new Date(date) : new Date();
 
-      await newExercise.save();
 
-      res.json({
-          username: user.username,
-          _id: user._id,
-          description: newExercise.description,
-          duration: newExercise.duration,
-          date: newExercise.date
-      });
+    // Check if the date is valid
+    if (isNaN(parsedDate.getTime())) {
+      return res.status(400).json({ error: "Invalid Date" });
+    }
+
+
+    // Save exercise to the Exercise model
+    const newExercise = new Exercise({
+      userId,
+      description,
+      duration: Number(duration),
+      date: parsedDate, 
+    });
+
+    await newExercise.save();
+    
+
+    res.json({
+      _id: user._id,
+      username: user.username,
+      description: newExercise.description,
+      duration: newExercise.duration,
+      date: parsedDate.toDateString(), 
+    });
+
   } catch (err) {
-      res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
 
+
 app.get("/api/users/:_id/logs", async (req, res) => {
   try {
-      const user = await User.findById(req.params._id);
-      if (!user) return res.json({ error: "User not found" });
+    const user = await User.findById(req.params._id);
+    if (!user) return res.status(404).json({ error: "User not found" });
 
-      let query = { userId: user._id };
+    let { from, to, limit } = req.query;
+    let filter = { userId: req.params._id };
 
+    if (from) {
+      filter.date = {};
+      if (from) filter.date.$gte = new Date(from + "T00:00:00.000Z"); // Start of the day
+      if (to) filter.date.$lte = new Date(to + "T23:59:59.999Z"); // End of the day
+    }
+    
 
-      if (req.query.from || req.query.to) {
-          query.date = {};
-          if (req.query.from) query.date.$gte = new Date(req.query.from).toDateString();
-          if (req.query.to) query.date.$lte = new Date(req.query.to).toDateString();
-      }
+    
 
-      let exercises = Exercise.find(query).select("description duration date -_id");
+    // Query exercises
+    let logs = await Exercise.find(filter)
+      .sort({ date: 1 }) // Sort logs by date (oldest first)
+      .limit(Number(limit) || 0);
 
+    res.json({
+      _id: user._id,
+      username: user.username,
+      count: logs.length,
+      log: logs.map(({ description, duration, date }) => ({
+        description,
+        duration,
+        date: new Date(date).toDateString(), 
+      })),
+    });
 
-      if (req.query.limit) exercises = exercises.limit(parseInt(req.query.limit));
-
-      exercises = await exercises;
-
-      res.json({
-          username: user.username,
-          _id: user._id,
-          count: exercises.length,
-          log: exercises
-      });
   } catch (err) {
-      res.status(500).json({ error: err.message });
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
@@ -118,5 +149,5 @@ app.get("/api/users/:_id/logs", async (req, res) => {
 
 
 const listener = app.listen(process.env.PORT || 3000, () => {
-  console.log('Your app is listening on port ' + listener.address().port)
-})
+  console.log("🚀 Server running on port " + listener.address().port);
+});
